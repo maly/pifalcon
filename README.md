@@ -1,0 +1,76 @@
+# PiFalcon
+
+PiFalcon zpřístupní laser s řadičem GRBL a USB kameru přes Raspberry Pi v lokální síti. LightBurn se k laseru připojuje přes TCP, obraz kamery čte jako MJPEG stream a samostatné webové rozhraní umožňuje měnit parametry kamery bez přístupu přes SSH.
+
+Projekt je připravený pro Raspberry Pi OS Lite a byl ověřen na Raspberry Pi 3 Model B s kamerou Creality Falcon.
+
+## Co řešení poskytuje
+
+| Služba | Adresa | Účel |
+|---|---|---|
+| `laser-bridge.service` | `gravipi.local:23` | Převod TCP komunikace na sériový port laseru pomocí `ser2net` |
+| `camera-stream.service` | `http://gravipi.local:8080/stream` | MJPEG stream USB kamery pomocí `ustreamer` |
+| `camera-controls.service` | `http://gravipi.local:8081/` | Webové ovládání dostupných V4L2 parametrů kamery |
+
+Adresu `gravipi.local` lze nahradit IP adresou Raspberry Pi.
+
+### Zapojení služeb
+
+```mermaid
+graph LR
+  LightBurn -->|"TCP port 23"| Bridge["ser2net bridge"]
+  Bridge --> Laser["GRBL laser"]
+  LightBurn -->|"MJPEG port 8080"| Stream["ustreamer"]
+  Browser -->|"HTTP port 8081"| Controls["camera-controls"]
+  Stream --> Camera["USB UVC kamera"]
+  Controls --> Camera
+```
+
+## Dokumentace
+
+- [HOWTO.md](HOWTO.md) — kompletní návod pro nové Raspberry Pi včetně instalace balíčků, vytvoření služeb a ověření;
+- [`camera/`](camera/) — zdrojové soubory webového ovládání kamery, testy, systemd unit a výchozí konfigurace.
+
+Pro novou instalaci začněte dokumentem [HOWTO.md](HOWTO.md). Cesty v `/dev/serial/by-id/` a `/dev/v4l/by-id/` vždy nahraďte cestami skutečně zjištěnými na cílovém Raspberry Pi.
+
+## Požadavky
+
+- Raspberry Pi s Raspberry Pi OS Lite a přístupem přes SSH;
+- laser s řadičem GRBL připojený přes USB;
+- USB UVC kamera;
+- `ser2net`, `ustreamer`, `v4l-utils`, Python 3, Flask a Gunicorn;
+- LightBurn a webový prohlížeč ve stejné lokální síti.
+
+## Webové ovládání kamery
+
+Aplikace v adresáři [`camera`](camera/) načítá parametry přímo z `v4l2-ctl`, takže zobrazuje pouze prvky podporované připojenou kamerou. Podporuje číselné, přepínací i výběrové controls, kontroluje přípustné hodnoty a po změně znovu načte skutečný stav zařízení.
+
+Přístup je ve výchozím nastavení omezen na loopback a privátní IPv4 sítě proměnnou `ALLOWED_NETWORKS`. Konfigurace nasazení je v [`camera/camera-controls.default`](camera/camera-controls.default).
+
+Testy aplikace lze na systému s nainstalovaným Flaskem spustit takto:
+
+```bash
+cd camera
+python3 -m pytest -q
+```
+
+## Ověření provozu
+
+Po instalaci zkontrolujte stav služeb:
+
+```bash
+systemctl is-active laser-bridge.service camera-stream.service camera-controls.service
+```
+
+Potom ověřte webové endpointy:
+
+```bash
+curl -fsS http://127.0.0.1:8081/api/controls
+curl -fsS -o /tmp/camera-test.jpg http://127.0.0.1:8080/snapshot
+```
+
+Podrobnější kontroly, diagnostiku a logy obsahuje [HOWTO.md](HOWTO.md#7-ověření-výsledku).
+
+## Bezpečnost
+
+Služby jsou určené pouze pro důvěryhodnou lokální síť. Porty `23`, `8080` a `8081` nepřesměrovávejte z routeru do internetu. Před přímým testováním GRBL přes TCP odpojte LightBurn, aby laser neovládali dva klienti současně.

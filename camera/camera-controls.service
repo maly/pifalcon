@@ -1,0 +1,26 @@
+[Unit]
+Description=LAN web controls for the LightBurn UVC camera
+After=network-online.target camera-stream.service
+Wants=network-online.target
+
+[Service]
+Type=exec
+User=camera-controls
+Group=camera-controls
+SupplementaryGroups=video
+WorkingDirectory=/opt/camera-controls
+EnvironmentFile=/etc/default/camera-controls
+ExecStart=/usr/bin/python3 -m gunicorn --workers 1 --threads 4 --bind 0.0.0.0:8081 --access-logfile - --error-logfile - camera_controls:app
+Restart=on-failure
+RestartSec=3
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_UNIX AF_INET
+
+[Install]
+WantedBy=multi-user.target
