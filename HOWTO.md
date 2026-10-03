@@ -376,6 +376,9 @@ sudoedit /etc/default/camera-controls
 CAMERA_DEVICE=/dev/v4l/by-id/SEM_DOPLNTE_SKUTECNOU_CESTU-video-index0
 CAMERA_STREAM_URL=http://192.168.0.99:8080/stream
 ALLOWED_NETWORKS=127.0.0.0/8,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16
+# Volitelné: povolené hodnoty hlavičky Host (ochrana proti DNS rebindingu).
+# Výchozí: hostitel z CAMERA_STREAM_URL, localhost a 127.0.0.1; IP adresy z ALLOWED_NETWORKS se akceptují vždy.
+#ALLOWED_HOSTS=gravipi.local,localhost,127.0.0.1
 ```
 
 Aplikace dynamicky načítá jen controls, které kamera skutečně podporuje. Číselné hodnoty zobrazuje jako slidery, boolean hodnoty jako checkboxy a V4L2 menu jako výběrové seznamy. Změny provádí přes `v4l2-ctl` a po každé změně znovu načte skutečný stav kamery.
@@ -406,7 +409,7 @@ sudo nmcli connection modify "NAZEV_ETHERNET_PROFILU" ipv4.route-metric 100 ipv6
 sudo nmcli connection modify "NAZEV_WIFI_PROFILU" ipv4.route-metric 600 ipv6.route-metric 600
 ```
 
-Vlastní aplikace omezuje přístup k ovládání na loopback a privátní LAN rozsahy přes `ALLOWED_NETWORKS`. Na routeru nevytvářejte port forwarding. Pokud na Pi používáte firewall, povolte z vlastní LAN pouze SSH a TCP porty `23`, `8080` a `8081`.
+Vlastní aplikace omezuje přístup k ovládání na loopback a privátní LAN rozsahy přes `ALLOWED_NETWORKS`, kontroluje hlavičku `Host` (`ALLOWED_HOSTS`) a u měnících požadavků hlavičku `Origin` (ochrana proti CSRF a DNS rebindingu). Na routeru nevytvářejte port forwarding. Pokud na Pi používáte firewall, povolte z vlastní LAN pouze SSH a TCP porty `23`, `8080` a `8081`.
 
 ### 7. Ověření výsledku
 

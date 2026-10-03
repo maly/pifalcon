@@ -17,7 +17,10 @@ function showNotice(message) {
 
 async function requestJson(url, options = {}) {
   const response = await fetch(url, {
-    headers: {'Content-Type': 'application/json'},
+    headers: {
+      'Content-Type': 'application/json',
+      'X-Requested-With': 'camera-controls',
+    },
     ...options,
   });
   const body = await response.json().catch(() => ({}));

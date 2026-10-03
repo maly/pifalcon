@@ -45,7 +45,7 @@ Pro novou instalaci začněte dokumentem [HOWTO.md](HOWTO.md). Cesty v `/dev/ser
 
 Aplikace v adresáři [`camera`](camera/) načítá parametry přímo z `v4l2-ctl`, takže zobrazuje pouze prvky podporované připojenou kamerou. Podporuje číselné, přepínací i výběrové controls, kontroluje přípustné hodnoty a po změně znovu načte skutečný stav zařízení.
 
-Přístup je ve výchozím nastavení omezen na loopback a privátní IPv4 sítě proměnnou `ALLOWED_NETWORKS`. Konfigurace nasazení je v [`camera/camera-controls.default`](camera/camera-controls.default).
+Přístup je ve výchozím nastavení omezen na loopback a privátní IPv4 sítě proměnnou `ALLOWED_NETWORKS`. Měnící požadavky (`POST`/`PUT`/`DELETE`) navíc musí mít `Origin` shodný s hostitelem aplikace (nebo `Content-Type: application/json` / hlavičku `X-Requested-With: camera-controls`) a hlavička `Host` musí patřit do `ALLOWED_HOSTS` (výchozí: hostitel z `CAMERA_STREAM_URL`, `localhost`, `127.0.0.1` a IP adresy z `ALLOWED_NETWORKS`), což chrání proti CSRF a DNS rebindingu. Konfigurace nasazení je v [`camera/camera-controls.default`](camera/camera-controls.default).
 
 Testy aplikace lze na systému s nainstalovaným Flaskem spustit takto:
 
