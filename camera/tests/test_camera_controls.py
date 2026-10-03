@@ -122,12 +122,148 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(outside_lan.status_code, 403)
 
     def test_reset_reports_invalid_camera_defaults_as_skipped(self):
-        response = self.client.post("/api/reset", environ_base={"REMOTE_ADDR": "192.168.1.10"})
+        response = self.client.post(
+            "/api/reset",
+            headers={"X-Requested-With": "camera-controls"},
+            environ_base={"REMOTE_ADDR": "192.168.1.10"},
+        )
 
         self.assertEqual(response.status_code, 200)
         body = response.get_json()
         self.assertIn("brightness", body["reset"]["skipped"])
         self.assertIn("white_balance_automatic", body["reset"]["applied"])
+
+
+class CsrfAndHostTests(unittest.TestCase):
+    LAN = {"REMOTE_ADDR": "192.168.1.10"}
+
+    def setUp(self):
+        self.camera = FakeCamera()
+        self.reset_calls = 0
+        original_reset = self.camera.reset_defaults
+
+        def counting_reset():
+            self.reset_calls += 1
+            return original_reset()
+
+        self.camera.reset_defaults = counting_reset
+        self.app = create_app(
+            camera=self.camera,
+            stream_url="http://gravipi.local:8080/stream",
+            allowed_networks=["127.0.0.0/8", "192.168.0.0/16"],
+        )
+        self.client = self.app.test_client()
+
+    def test_reset_with_foreign_origin_is_rejected(self):
+        response = self.client.post(
+            "/api/reset",
+            headers={"Origin": "http://evil.example", "X-Requested-With": "camera-controls"},
+            environ_base=self.LAN,
+        )
+
+        self.assertEqual(response.status_code, 403)
+        self.assertEqual(self.reset_calls, 0)
+
+    def test_reset_without_origin_and_marker_header_is_rejected(self):
+        response = self.client.post("/api/reset", environ_base=self.LAN)
+
+        self.assertEqual(response.status_code, 403)
+        self.assertEqual(self.reset_calls, 0)
+
+    def test_reset_as_cross_site_form_post_is_rejected(self):
+        response = self.client.post(
+            "/api/reset",
+            data={"a": "b"},
+            headers={"Origin": "http://evil.example"},
+            environ_base=self.LAN,
+        )
+
+        self.assertEqual(response.status_code, 403)
+        self.assertEqual(self.reset_calls, 0)
+
+    def test_put_with_foreign_origin_is_rejected(self):
+        response = self.client.put(
+            "/api/controls/brightness",
+            json={"value": 5},
+            headers={"Origin": "http://evil.example"},
+            environ_base=self.LAN,
+        )
+
+        self.assertEqual(response.status_code, 403)
+        self.assertEqual(self.camera.set_calls, [])
+
+    def test_foreign_host_header_is_rejected(self):
+        for path in ("/", "/api/controls"):
+            response = self.client.get(
+                path, headers={"Host": "evil.example"}, environ_base=self.LAN
+            )
+            self.assertEqual(response.status_code, 403, path)
+            self.assertEqual(response.get_json()["error"], "Unexpected Host header")
+
+        rebound = self.client.post(
+            "/api/reset",
+            headers={
+                "Host": "evil.example:8081",
+                "Origin": "http://evil.example:8081",
+                "X-Requested-With": "camera-controls",
+            },
+            environ_base=self.LAN,
+        )
+        self.assertEqual(rebound.status_code, 403)
+        self.assertEqual(self.reset_calls, 0)
+
+    def test_legitimate_requests_are_accepted(self):
+        reset = self.client.post(
+            "/api/reset",
+            headers={
+                "Host": "gravipi.local:8081",
+                "Origin": "http://gravipi.local:8081",
+                "X-Requested-With": "camera-controls",
+            },
+            environ_base=self.LAN,
+        )
+        self.assertEqual(reset.status_code, 200)
+        self.assertEqual(self.reset_calls, 1)
+
+        by_ip = self.client.put(
+            "/api/controls/brightness",
+            json={"value": 3},
+            headers={
+                "Host": "192.168.1.50:8081",
+                "Origin": "http://192.168.1.50:8081",
+                "X-Requested-With": "camera-controls",
+            },
+            environ_base=self.LAN,
+        )
+        self.assertEqual(by_ip.status_code, 200)
+
+        json_without_origin = self.client.put(
+            "/api/controls/brightness",
+            json={"value": 4},
+            headers={"Host": "localhost:8081"},
+            environ_base=self.LAN,
+        )
+        self.assertEqual(json_without_origin.status_code, 200)
+
+        read = self.client.get(
+            "/api/controls", headers={"Host": "gravipi.local:8081"}, environ_base=self.LAN
+        )
+        self.assertEqual(read.status_code, 200)
+
+    def test_allowed_hosts_can_be_configured(self):
+        app = create_app(
+            camera=self.camera,
+            stream_url="http://gravipi.local:8080/stream",
+            allowed_networks=["192.168.0.0/16"],
+            allowed_hosts=["camera.lan"],
+        )
+        client = app.test_client()
+
+        ok = client.get("/api/controls", headers={"Host": "camera.lan:8081"}, environ_base=self.LAN)
+        denied = client.get("/api/controls", headers={"Host": "gravipi.local"}, environ_base=self.LAN)
+
+        self.assertEqual(ok.status_code, 200)
+        self.assertEqual(denied.status_code, 403)
 
 
 if __name__ == "__main__":

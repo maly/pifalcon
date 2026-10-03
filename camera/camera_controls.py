@@ -3,6 +3,7 @@ import os
 import re
 import subprocess
 import threading
+from urllib.parse import urlsplit
 
 from flask import Flask, jsonify, render_template, request
 
@@ -195,13 +196,53 @@ def _parse_networks(networks):
     return [ipaddress.ip_network(network.strip()) for network in networks if network.strip()]
 
 
-def create_app(camera=None, stream_url=None, allowed_networks=None):
+MUTATING_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
+
+
+def _strip_port(host):
+    """Return the lower-case hostname of a Host header / host[:port] value."""
+    host = (host or "").strip().lower()
+    if host.startswith("["):
+        end = host.find("]")
+        return host[1:end] if end != -1 else host
+    if host.count(":") == 1:
+        return host.split(":", 1)[0]
+    return host
+
+
+def _parse_hosts(hosts, stream_url):
+    """Hostnames accepted in the Host header (DNS rebinding protection).
+
+    Defaults: host of CAMERA_STREAM_URL, localhost and 127.0.0.1. IP literals from
+    ALLOWED_NETWORKS are always accepted separately (see restrict_to_lan).
+    """
+    if hosts is None:
+        raw = os.environ.get("ALLOWED_HOSTS")
+        hosts = raw.split(",") if raw else None
+    if hosts is None:
+        stream_host = urlsplit(stream_url).hostname or ""
+        hosts = [stream_host, "localhost", "127.0.0.1"]
+    return {_strip_port(host) for host in hosts if host and host.strip()}
+
+
+def create_app(camera=None, stream_url=None, allowed_networks=None, allowed_hosts=None):
     app = Flask(__name__)
     camera = camera or V4L2Camera(os.environ.get("CAMERA_DEVICE", "/dev/video0"))
     stream_url = stream_url or os.environ.get(
         "CAMERA_STREAM_URL", "http://gravipi.local:8080/stream"
     )
     networks = _parse_networks(allowed_networks)
+    hosts = _parse_hosts(allowed_hosts, stream_url)
+
+    def host_is_allowed(host_header):
+        hostname = _strip_port(host_header)
+        if hostname in hosts:
+            return True
+        try:
+            address = ipaddress.ip_address(hostname)
+        except ValueError:
+            return False
+        return any(address in network for network in networks)
 
     @app.before_request
     def restrict_to_lan():
@@ -211,6 +252,24 @@ def create_app(camera=None, stream_url=None, allowed_networks=None):
             return jsonify(error="Invalid client address"), 403
         if not any(remote in network for network in networks):
             return jsonify(error="Camera controls are available only from the LAN"), 403
+
+        # DNS rebinding: a rebound attacker domain reaches us with a foreign Host header.
+        if not host_is_allowed(request.host):
+            return jsonify(error="Unexpected Host header"), 403
+
+        # CSRF: state-changing requests must come from our own origin.
+        if request.method in MUTATING_METHODS:
+            origin = request.headers.get("Origin")
+            if origin is not None:
+                if origin.rstrip("/") != request.host_url.rstrip("/"):
+                    return jsonify(error="Cross-origin request rejected"), 403
+            elif not (
+                request.is_json
+                or request.headers.get("X-Requested-With") == "camera-controls"
+            ):
+                return jsonify(
+                    error="Missing Origin; JSON content type or X-Requested-With header required"
+                ), 403
         return None
 
     def current_state():

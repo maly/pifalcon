@@ -1,3 +1,6 @@
 CAMERA_DEVICE=/dev/v4l/by-id/usb-STZN-FAY-231008_Creality_Falcon_Camera_01.00.00-video-index0
 CAMERA_STREAM_URL=http://gravipi.local:8080/stream
 ALLOWED_NETWORKS=127.0.0.0/8,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16
+# Hostnames povolené v hlavičce Host (ochrana proti DNS rebindingu), oddělené čárkou.
+# Výchozí: hostitel z CAMERA_STREAM_URL, localhost a 127.0.0.1; IP adresy z ALLOWED_NETWORKS se vždy akceptují.
+#ALLOWED_HOSTS=gravipi.local,localhost,127.0.0.1
