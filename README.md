@@ -1,5 +1,7 @@
 # PiFalcon
 
+[![CI](https://github.com/maly/pifalcon/actions/workflows/ci.yml/badge.svg)](https://github.com/maly/pifalcon/actions/workflows/ci.yml)
+
 PiFalcon zpřístupní laser s řadičem GRBL a USB kameru přes Raspberry Pi v lokální síti. LightBurn se k laseru připojuje přes TCP, obraz kamery čte jako MJPEG stream a samostatné webové rozhraní umožňuje měnit parametry kamery bez přístupu přes SSH.
 
 Projekt je připravený pro Raspberry Pi OS Lite a byl ověřen na Raspberry Pi 3 Model B s kamerou Creality Falcon.
@@ -47,12 +49,16 @@ Aplikace v adresáři [`camera`](camera/) načítá parametry přímo z `v4l2-ct
 
 Přístup je ve výchozím nastavení omezen na loopback a privátní IPv4 sítě proměnnou `ALLOWED_NETWORKS`. Měnící požadavky (`POST`/`PUT`/`DELETE`) navíc musí mít `Origin` shodný s hostitelem aplikace (nebo `Content-Type: application/json` / hlavičku `X-Requested-With: camera-controls`) a hlavička `Host` musí patřit do `ALLOWED_HOSTS` (výchozí: hostitel z `CAMERA_STREAM_URL`, `localhost`, `127.0.0.1` a IP adresy z `ALLOWED_NETWORKS`), což chrání proti CSRF a DNS rebindingu. Konfigurace nasazení je v [`camera/camera-controls.default`](camera/camera-controls.default).
 
-Testy aplikace lze na systému s nainstalovaným Flaskem spustit takto:
+Testy aplikace se spouštějí v čistém virtualenvu takto (závislosti jsou v [`camera/requirements-dev.txt`](camera/requirements-dev.txt)):
 
 ```bash
+python3 -m venv .venv && . .venv/bin/activate
+pip install -r camera/requirements-dev.txt
 cd camera
-python3 -m pytest -q
+python -m pytest -q
 ```
+
+Stejné testy běží v GitHub Actions (workflow [CI](.github/workflows/ci.yml)) na každém pull requestu a pushi do `master`. Na Raspberry Pi se Gunicorn instaluje přes `apt` (viz [HOWTO.md](HOWTO.md)), proto není v `requirements.txt`.
 
 ## Ověření provozu
 
