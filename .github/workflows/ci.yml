@@ -27,3 +27,17 @@ jobs:
           cache-dependency-path: camera/requirements-dev.txt
       - run: pip install -r requirements-dev.txt
       - run: python -m pytest -q
+  howto-tests:
+    # Kontroly skriptu, systemd unit a firewallu z HOWTO.md (vč. skutečného ser2net a nft -c).
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: sudo apt-get update && sudo apt-get install -y ser2net nftables
+      - run: pip install pytest
+      - run: python -m pytest -q -rs tests
+      - name: nft -c (vyžaduje CAP_NET_ADMIN)
+        run: sudo "$(command -v python)" -m pytest -q -rs tests -k nft

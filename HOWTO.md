@@ -11,13 +11,14 @@ V příkladech má Raspberry Pi adresu `192.168.0.99`. Nahraďte ji skutečnou a
 ## Co udělat
 
 1. Připojit Raspberry Pi k LAN, ideálně Ethernetem, a přihlásit se přes SSH.
-2. Aktualizovat Raspberry Pi OS Lite a nainstalovat `ser2net`, `ustreamer`, V4L2 nástroje, Flask a Gunicorn.
+2. Aktualizovat Raspberry Pi OS Lite a nainstalovat `ser2net`, `ustreamer`, V4L2 nástroje, `nftables`, Flask a Gunicorn.
 3. Připojit laser a kameru a zjistit jejich stabilní cesty v `/dev/serial/by-id/` a `/dev/v4l/by-id/`.
-4. Vytvořit `laser-bridge.service`, který zpřístupní GRBL sériový port na TCP portu `23`.
-5. Vytvořit `camera-stream.service`, který zpřístupní existující UVC kameru jako MJPEG stream na portu `8080`.
+4. Vytvořit `laser-bridge.service`, který zpřístupní GRBL sériový port na TCP portu `23` (běží pod neprivilegovaným uživatelem, druhé spojení odmítne).
+5. Vytvořit `camera-stream.service`, který zpřístupní existující UVC kameru jako MJPEG stream na portu `8080` (také bez roota).
 6. Zkopírovat adresář `camera` do `/opt/camera-controls`, doplnit zjištěnou cestu kamery a aktivovat `camera-controls.service` na portu `8081`.
-7. Ověřit služby, naslouchající porty, HTTP endpointy a komunikaci s laserem.
-8. V routeru je vhodné vytvořit DHCP rezervaci, například `192.168.0.99`. Porty `23`, `8080` a `8081` nepřesměrovávat do internetu.
+7. **Povinně** omezit přístup k portům `22`, `23`, `8080` a `8081` firewallem (`nftables`) jen na vlastní LAN.
+8. Ověřit služby, naslouchající porty, firewall, neprivilegované uživatele služeb, HTTP endpointy a komunikaci s laserem.
+9. V routeru je vhodné vytvořit DHCP rezervaci, například `192.168.0.99`. Porty `23`, `8080` a `8081` nepřesměrovávat do internetu.
 
 ## Jak jsem postupoval
 
@@ -34,7 +35,7 @@ Aktualizujte systém a nainstalujte potřebné balíčky:
 ```bash
 sudo apt-get update
 sudo DEBIAN_FRONTEND=noninteractive apt-get -y full-upgrade
-sudo DEBIAN_FRONTEND=noninteractive apt-get install -y ser2net ustreamer v4l-utils usbutils curl netcat-openbsd
+sudo DEBIAN_FRONTEND=noninteractive apt-get install -y ser2net ustreamer v4l-utils usbutils curl netcat-openbsd nftables
 sudo DEBIAN_FRONTEND=noninteractive apt-get install -y python3-flask python3-pytest python3-gunicorn
 sudo systemctl reboot
 ```
@@ -73,12 +74,15 @@ Pro běžný GRBL/Falcon řadič se používá `115200` baud, 8 datových bitů,
 
 ### 3. Laserový TCP bridge
 
-Nejdříve zazálohujte případnou distribuční konfiguraci a vypněte distribuční unit. Program `ser2net` bude spouštět vlastní služba, takže nesmí současně běžet druhá instance:
+Vypněte distribuční unit. Program `ser2net` bude spouštět vlastní služba, takže nesmí současně běžet druhá instance:
 
 ```bash
-sudo cp -a /etc/ser2net.yaml /etc/ser2net.yaml.pre-lightburn
 sudo systemctl disable --now ser2net.service
 ```
+
+Služba `laser-bridge` běží pod dočasným neprivilegovaným uživatelem (`DynamicUser=yes`) jen s přístupem ke skupině `dialout` (sériové porty) a s jedinou capability `CAP_NET_BIND_SERVICE` pro port `23`. Konfiguraci `ser2net` proto negeneruje do `/etc/ser2net.yaml`, ale do `/run/laser-bridge/ser2net.yaml` (adresář vytváří systemd přes `RuntimeDirectory=`). Distribuční `/etc/ser2net.yaml` zůstává nedotčený.
+
+> Aktualizujete-li instalaci podle starší verze tohoto návodu, kde skript přepisoval `/etc/ser2net.yaml` a běžel jako root: nahraďte skript i unit níže uvedenými verzemi, případně obnovte původní konfiguraci (`sudo mv /etc/ser2net.yaml.pre-lightburn /etc/ser2net.yaml`), smažte starý PID soubor (`sudo rm -f /run/laser-bridge.pid`) a spusťte `sudo systemctl daemon-reload && sudo systemctl restart laser-bridge.service`.
 
 Do `/etc/default/laser-bridge` vložte skutečnou stabilní cestu laseru:
 
@@ -105,7 +109,6 @@ sudoedit /usr/local/sbin/laser-bridge
 set -eu
 
 DEFAULTS=/etc/default/laser-bridge
-CONFIG=/etc/ser2net.yaml
 LASER_DEVICE=auto
 LASER_BAUD=115200
 LASER_PORT=23
@@ -113,6 +116,11 @@ LISTEN_ADDRESS=0.0.0.0
 WAIT_SECONDS=5
 
 [ ! -r "$DEFAULTS" ] || . "$DEFAULTS"
+
+# Adresář vytváří systemd (RuntimeDirectory=laser-bridge) a předává ho v $RUNTIME_DIRECTORY.
+RUNTIME_DIR="${RUNTIME_DIRECTORY:-/run/laser-bridge}"
+CONFIG="$RUNTIME_DIR/ser2net.yaml"
+PIDFILE="$RUNTIME_DIR/ser2net.pid"
 
 find_laser_device() {
     if [ "$LASER_DEVICE" != auto ]; then
@@ -131,7 +139,8 @@ while [ -z "$device" ]; do
     [ -n "$device" ] || { echo "Laser není připojen; čekám ${WAIT_SECONDS} s"; sleep "$WAIT_SECONDS"; }
 done
 
-tmp_config="$(mktemp /run/laser-ser2net.XXXXXX.yaml)"
+umask 077
+tmp_config="$(mktemp "$RUNTIME_DIR/ser2net.yaml.XXXXXX")"
 trap 'rm -f "$tmp_config"' EXIT HUP INT TERM
 {
     printf '%%YAML 1.1\n---\n'
@@ -139,15 +148,27 @@ trap 'rm -f "$tmp_config"' EXIT HUP INT TERM
     printf '    accepter: tcp,%s,%s\n' "$LISTEN_ADDRESS" "$LASER_PORT"
     printf '    enable: on\n'
     printf '    options:\n'
-    printf '      kickolduser: true\n'
+    printf '      kickolduser: false\n'
     printf '    connector: serialdev,\n'
     printf '              %s,\n' "$device"
     printf '              %sn81,local\n' "$LASER_BAUD"
 } > "$tmp_config"
-install -o root -g root -m 0644 "$tmp_config" "$CONFIG"
+mv -f "$tmp_config" "$CONFIG"
+trap - EXIT HUP INT TERM
 
-exec /usr/sbin/ser2net -n -c "$CONFIG" -P /run/laser-bridge.pid
+exec /usr/sbin/ser2net -n -c "$CONFIG" -P "$PIDFILE"
 ```
+
+Volba `kickolduser: false` (výchozí chování `ser2net`) znamená, že dokud je k laseru připojený jeden klient (typicky LightBurn), každé další TCP spojení na port `23` je okamžitě odmítnuto a běžící spojení zůstává nedotčené. Původní `kickolduser: true` by naopak běžícího klienta bez varování odpojilo – i uprostřed gravírování – kdykoli by se připojil kdokoli jiný (nebo omylem druhá instance LightBurnu).
+
+Pokud spojení „uvízne“ (např. klientský počítač spadl nebo se odpojil od sítě, aniž by TCP spojení korektně ukončil) a LightBurn se nemůže znovu připojit, ověřte, že k laseru nikdo jiný připojený není, a službu restartujte – tím se všechna spojení ukončí:
+
+```bash
+sudo ss -tnp state established '( sport = :23 )'
+sudo systemctl restart laser-bridge.service
+```
+
+`ser2net` zamyká sériový port UUCP zámkem v `/run/lock` (na Raspberry Pi OS je to `tmpfs` s právy `1777`), proto unit níže tento jediný adresář zpřístupňuje pro zápis (`ReadWritePaths=/run/lock`), přestože jinak je celý systém pro službu jen ke čtení (`ProtectSystem=strict`). Pokud by journal služby hlásil `Error accessing locks` nebo `Port in use`, ověřte, že laser nepoužívá jiný program, a smažte osiřelý zámek `sudo rm -f /run/lock/LCK..ttyUSB0` (resp. `LCK..ttyACM0`).
 
 Nastavte spustitelnost:
 
@@ -169,14 +190,32 @@ Type=exec
 ExecStart=/usr/local/sbin/laser-bridge
 Restart=always
 RestartSec=3
+# ser2net (síťová služba bez autentizace) neběží jako root:
+DynamicUser=yes
+SupplementaryGroups=dialout
+RuntimeDirectory=laser-bridge
+RuntimeDirectoryMode=0750
+# Port 23 je < 1024, proto jediná povolená capability:
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+NoNewPrivileges=yes
+ProtectSystem=strict
+# Kromě RuntimeDirectory jediná zapisovatelná cesta: UUCP zámek sériového portu (/run/lock/LCK..ttyUSB0)
+ReadWritePaths=/run/lock
+ProtectHome=yes
+PrivateTmp=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
 
 [Install]
 WantedBy=multi-user.target
 ```
 
-Aktivujte službu:
+`PrivateDevices=` nenastavujte – služba potřebuje přístup ke skutečnému `/dev/ttyUSB*`/`/dev/ttyACM*`. Aktivujte službu:
 
 ```bash
+sudo systemd-analyze verify /etc/systemd/system/laser-bridge.service
 sudo systemctl daemon-reload
 sudo systemctl enable --now laser-bridge.service
 ```
@@ -324,14 +363,26 @@ Type=exec
 ExecStart=/usr/local/sbin/camera-stream
 Restart=always
 RestartSec=3
+# ustreamer neběží jako root; přístup ke kameře přes skupinu video:
+DynamicUser=yes
+SupplementaryGroups=video
+CapabilityBoundingSet=
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
 
 [Install]
 WantedBy=multi-user.target
 ```
 
-Aktivujte službu:
+Port `8080` je nad 1024, takže služba nepotřebuje žádnou capability. Aktivujte službu:
 
 ```bash
+sudo systemd-analyze verify /etc/systemd/system/camera-stream.service
 sudo systemctl daemon-reload
 sudo systemctl enable --now camera-stream.service
 ```
@@ -409,9 +460,54 @@ sudo nmcli connection modify "NAZEV_ETHERNET_PROFILU" ipv4.route-metric 100 ipv6
 sudo nmcli connection modify "NAZEV_WIFI_PROFILU" ipv4.route-metric 600 ipv6.route-metric 600
 ```
 
-Vlastní aplikace omezuje přístup k ovládání na loopback a privátní LAN rozsahy přes `ALLOWED_NETWORKS`, kontroluje hlavičku `Host` (`ALLOWED_HOSTS`) a u měnících požadavků hlavičku `Origin` (ochrana proti CSRF a DNS rebindingu). Na routeru nevytvářejte port forwarding. Pokud na Pi používáte firewall, povolte z vlastní LAN pouze SSH a TCP porty `23`, `8080` a `8081`.
+Vlastní aplikace omezuje přístup k ovládání na loopback a privátní LAN rozsahy přes `ALLOWED_NETWORKS`, kontroluje hlavičku `Host` (`ALLOWED_HOSTS`) a u měnících požadavků hlavičku `Origin` (ochrana proti CSRF a DNS rebindingu). Laserový bridge (`ser2net`) ani MJPEG stream (`ustreamer`) žádnou kontrolu klientů nemají, proto je následující firewall povinný. Na routeru nevytvářejte port forwarding.
 
-### 7. Ověření výsledku
+### 7. Omezení přístupu k portům (povinné)
+
+Surový GRBL port `23` umí zapnout laser, pohybovat s ním i měnit `$`-nastavení řadiče. Omezení přímo na Pi nezávisí na tom, jak je nastavený router, a chrání i před hosty na Wi-Fi, IoT zařízeními nebo VPN. Následující pravidla `nftables` povolí SSH (`22`), laser (`23`), stream (`8080`) a ovládání kamery (`8081`) jen z loopbacku a privátních LAN rozsahů; ostatní spojení na tyto porty zahodí. IPv4 rozsahy odpovídají výchozímu `ALLOWED_NETWORKS` webového ovládání (`127.0.0.0/8` pokrývá pravidlo `iif lo accept`), z IPv6 jsou povoleny jen link-local `fe80::/10` a ULA `fc00::/7`.
+
+Vytvořte `/etc/nftables.d/pifalcon.nft`:
+
+```bash
+sudo install -d -o root -g root -m 0755 /etc/nftables.d
+sudoedit /etc/nftables.d/pifalcon.nft
+```
+
+```nft
+#!/usr/sbin/nft -f
+# PiFalcon: SSH, laser (ser2net), MJPEG stream a ovládání kamery jen z vlastní LAN.
+# IPv4 rozsahy drž v souladu s ALLOWED_NETWORKS v /etc/default/camera-controls.
+
+# Opakované načtení souboru nahradí tabulku, místo aby pravidla zdvojilo.
+table inet pifalcon
+delete table inet pifalcon
+
+table inet pifalcon {
+    chain input {
+        type filter hook input priority 0; policy accept;
+        iif lo accept
+        tcp dport { 22, 23, 8080, 8081 } ip saddr { 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16 } accept
+        tcp dport { 22, 23, 8080, 8081 } ip6 saddr { fe80::/10, fc00::/7 } accept
+        tcp dport { 22, 23, 8080, 8081 } counter drop
+    }
+}
+```
+
+Pokud se k Pi připojujete přes SSH odjinud (např. VPN s rozsahem mimo uvedené sítě) nebo SSH běží na jiném portu, upravte rozsahy či porty **před** aktivací, jinak se k Pi přes SSH nepřipojíte. Upravíte-li rozsahy, upravte stejně i `ALLOWED_NETWORKS` v `/etc/default/camera-controls`.
+
+Distribuční `/etc/nftables.conf` začíná `flush ruleset` a soubory z `/etc/nftables.d/` sám nenačítá. Doplňte do něj `include`, zkontrolujte syntaxi a firewall aktivujte (i po restartu):
+
+```bash
+grep -qxF 'include "/etc/nftables.d/*.nft"' /etc/nftables.conf || echo 'include "/etc/nftables.d/*.nft"' | sudo tee -a /etc/nftables.conf
+sudo nft -c -f /etc/nftables.conf
+sudo systemctl enable nftables.service
+sudo systemctl restart nftables.service
+sudo nft list table inet pifalcon
+```
+
+Již navázané SSH spojení z LAN zůstane zachováno. Používáte-li na Pi i jiný nástroj spravující firewall (Docker, `ufw`, `firewalld`), pamatujte, že `flush ruleset` v `/etc/nftables.conf` při restartu `nftables.service` smaže i jejich pravidla; v takovém případě vložte tabulku `pifalcon` do jejich konfigurace.
+
+### 8. Ověření výsledku
 
 Zkontrolujte automatický start a běh všech služeb:
 
@@ -423,6 +519,17 @@ sudo systemctl status camera-stream.service
 sudo systemctl status camera-controls.service
 sudo ss -lntp | grep -E ':(23|8080|8081)[[:space:]]'
 ```
+
+Ověřte, že firewall je aktivní a služby neběží jako root:
+
+```bash
+sudo nft list ruleset | grep -E 'dport'
+systemctl show -p User,DynamicUser laser-bridge.service camera-stream.service camera-controls.service
+ps -o user=,group=,supgrp=,cmd= -C ser2net,ustreamer
+ls -l /run/laser-bridge/
+```
+
+Výpis `nft` musí obsahovat tři pravidla `tcp dport { 22, 23, 8080, 8081 }` (dvě `accept`, jedno `drop`). `laser-bridge` a `camera-stream` mají mít `DynamicUser=yes` a procesy `ser2net` a `ustreamer` nesmí běžet jako `root` (jejich uživatel se jmenuje stejně jako služba). V `/run/laser-bridge/` je vygenerovaný `ser2net.yaml`.
 
 Ověřte HTTP rozhraní a kameru lokálně na Raspberry Pi:
 
@@ -443,7 +550,15 @@ curl -I http://192.168.0.99:8081/
 
 Přímý dotaz na GRBL posílejte jen tehdy, když k laseru není současně připojen LightBurn. Dotaz `?` má vrátit stav řadiče a `$I` jeho identifikaci.
 
-Nakonec Raspberry Pi restartujte a kontroly `is-enabled`, `is-active`, `ss` a HTTP testy zopakujte:
+Ověřte chování při druhém spojení: připojte LightBurn k laseru a z jiného počítače v LAN zkuste druhé spojení. To musí být odmítnuto (`ser2net` vypíše hlášku o obsazeném portu a spojení ukončí) a LightBurn musí zůstat připojený a ovládat laser:
+
+```bash
+nc 192.168.0.99 23 </dev/null
+```
+
+Pokud máte možnost, ověřte i zařízení mimo povolené rozsahy (např. počítač za VPN nebo v jiné síti): `nc -vz -w 3 192.168.0.99 23` musí skončit timeoutem a čítač pravidla `drop` v `sudo nft list table inet pifalcon` se zvýší.
+
+Nakonec Raspberry Pi restartujte a kontroly `is-enabled`, `is-active`, `ss`, `nft` a HTTP testy zopakujte:
 
 ```bash
 sudo systemctl reboot

@@ -75,8 +75,10 @@ curl -fsS http://127.0.0.1:8081/api/controls
 curl -fsS -o /tmp/camera-test.jpg http://127.0.0.1:8080/snapshot
 ```
 
-Podrobnější kontroly, diagnostiku a logy obsahuje [HOWTO.md](HOWTO.md#7-ověření-výsledku).
+Podrobnější kontroly, diagnostiku a logy obsahuje [HOWTO.md](HOWTO.md#8-ověření-výsledku).
 
 ## Bezpečnost
 
-Služby jsou určené pouze pro důvěryhodnou lokální síť. Porty `23`, `8080` a `8081` nepřesměrovávejte z routeru do internetu. Před přímým testováním GRBL přes TCP odpojte LightBurn, aby laser neovládali dva klienti současně.
+Služby jsou určené pouze pro důvěryhodnou lokální síť. Porty `23`, `8080` a `8081` nepřesměrovávejte z routeru do internetu. Přístup k nim (a k SSH) je navíc přímo na Raspberry Pi omezen povinným firewallem `nftables` jen na loopback a privátní LAN rozsahy – viz [HOWTO.md – Omezení přístupu k portům](HOWTO.md#7-omezení-přístupu-k-portům-povinné).
+
+Služby `laser-bridge` (`ser2net`) a `camera-stream` (`ustreamer`) neběží jako root, ale pod dočasným neprivilegovaným uživatelem (`DynamicUser=yes`) s přístupem jen ke skupině `dialout`, resp. `video`; konfigurace `ser2net` se generuje do `/run/laser-bridge/`. Bridge používá `kickolduser: false`: dokud je připojený LightBurn, každé další spojení na port `23` je odmítnuto a běžící úloha se nepřeruší. Uvízlé spojení uvolní `sudo systemctl restart laser-bridge.service`. Před přímým testováním GRBL přes TCP proto odpojte LightBurn.
